@@ -3,6 +3,8 @@ import os
 import sqlite3
 import pandas.io.sql
 
+import util
+
 class ADE_XL_Result(object):
     def __init__(self, directory):
         self.directory = directory
@@ -102,25 +104,115 @@ class ADE_XL_HistoryEntry(object):
     def get_result_db(self, result):
         if self.simresults:
             sqlitedbfile = result.expand_path(self.simresults)
-            return sqlite3.connect(sqlitedbfile)
+            return ADE_XL_ResultDatabase(sqlitedbfile)
 
-    def get_all_results(self, result):
-        """Get all results as pandas dataframe"""
+class ADE_XL_ResultDatabase(object):
+    def __init__(self, dbfile):
+        self.conn = sqlite3.connect(dbfile)
+        
+    def get_results(self, **results):
+        """Get selected results as pandas dataframe"""
         
         query = """SELECT 
-                       test.name, resultValue.pointID, result.name, resultValue.value
+                       test.name as testname, resultValue.pointID, 
+                       result.name as resultname, resultValue.value
                    FROM 
                        resultValue
                    INNER JOIN 
                        result ON result.resultID = resultValue.resultID
                    INNER JOIN
+                       point ON point.pointID = resultValue.pointID
+                   INNER JOIN
+                       corner ON corner.cornerID = point.cornerID
+                   INNER JOIN
                        test ON test.testID = result.testID
                 """
-        
-        conn = self.get_result_db(result)
-        return pandas.io.sql.read_frame(query, conn)
+        return pandas.io.sql.read_frame(query, self.conn).applymap(util.adexl_to_python)
 
-    def get_parameters(self, pointid, result):
+    def get_point_corner_parameters(self, ):
+        """Get all results as pandas dataframe"""
+        
+        query = """SELECT 
+                       test.name as testname, resultValue.pointID, 
+                       corner.name as cornername, 
+                       result.name as resultname, resultValue.value
+                   FROM 
+                       resultValue
+                   INNER JOIN 
+                       result ON result.resultID = resultValue.resultID
+                   INNER JOIN
+                       point ON point.pointID = resultValue.pointID
+                   INNER JOIN
+                       corner ON corner.cornerID = point.cornerID
+                   INNER JOIN
+                       test ON test.testID = result.testID
+                """
+        return pandas.io.sql.read_frame(query, self.conn).applymap(util.adexl_to_python)
+
+    def get_result_names(self):
+        query = """SELECT result.name
+                   FROM result"""
+        return [row[0] for row in self.conn.execute(query).fetchall()]
+
+    def get_parameter_names(self):
+        query = """SELECT name
+                   FROM parameter"""
+        return [row[0] for row in self.conn.execute(query).fetchall()]
+
+    def get_results(self, *resultnames):
+        ## If no parameters, select all columns
+        if len(resultnames) == 0:
+            resultnames = self.get_result_names()
+
+        subqueries = ["""(SELECT value 
+                          FROM resultValue 
+                          INNER JOIN
+                                result ON result.resultID = resultValue.resultID
+                          INNER JOIN
+                                test ON test.testID = result.testID
+                          WHERE resultValue.pointID == point.pointID
+                                AND result.name = '%(resultname)s') 
+                         AS '%(resultname)s'""" % {'resultname': resultname}
+                      for resultname in resultnames]
+        select_columns = ", ".join(subqueries)
+
+        quoted_result_names = ', '.join(["'%s'" % rn for rn in resultnames])
+
+        query = """SELECT 
+                       point.pointID as pointID, 
+                       %s
+                   FROM 
+                       point
+                """ % select_columns
+
+        return pandas.io.sql.read_frame(query, self.conn).applymap(util.adexl_to_python)
+        
+    def get_parameter_values(self, *parameternames):
+        ## If no parameters, select all columns
+        if len(parameternames) == 0:
+            parameternames = self.get_parameter_names()
+
+        subqueries = ["""(SELECT value 
+                          FROM parameterValue 
+                          INNER JOIN
+                                parameter ON parameter.parameterID = parameterValue.parameterID
+                          WHERE parameterValue.pointID == point.pointID
+                                AND parameter.name = '%(parametername)s') 
+                         AS '%(parametername)s'""" % {'parametername': parametername}
+                      for parametername in parameternames]
+        select_columns = ", ".join(subqueries)
+
+        query = """SELECT 
+                       point.pointID as pointID, 
+                       %s
+                   FROM 
+                       point
+                """ % select_columns
+
+        return pandas.io.sql.read_frame(query, self.conn).applymap(util.adexl_to_python)
+
+
+    def get_parameters(self, pointid):
         query = """SELECT
                       parameter.name, parameterValue.value
                    FROM
@@ -129,9 +221,9 @@ class ADE_XL_HistoryEntry(object):
                       parameter ON parameter.parameterID = parameterValue.parameterID
                    WHERE
                       parameterValue.pointID = %d""" % pointid
-        conn = self.get_result_db(result)
-        return pandas.io.sql.read_frame(query, conn)
-        
+        return pandas.io.sql.read_frame(query, self.conn).applymap(util.adexl_to_python)
+
+
 if __name__ == '__main__':
     r = ADE_XL_Result(os.path.join(os.path.dirname(__file__), 'test', 'data', 'adexl'))
     
